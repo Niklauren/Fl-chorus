@@ -1,0 +1,4 @@
+#!/bin/bash
+# Make macOS pick up the new Audio Unit right away
+killall -9 AudioComponentRegistrar >/dev/null 2>&1 || true
+exit 0
