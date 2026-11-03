@@ -1,0 +1,82 @@
+name: Installers
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal VST3 + AU and the .pkg installer
+        run: bash installer/mac/make-pkg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*.pkg
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build VST3 and the .exe installer
+        shell: cmd
+        run: installer\windows\make-installer.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+
+  bundle:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Add install guide
+        run: |
+          cat > "out/КАК УСТАНОВИТЬ.txt" <<'EOF'
+          FL Chorus — recreated by mikita_laurenau
+          https://www.instagram.com/mikita_laurenau/
+
+          MAC (FL-Chorus-1.0.0-mac.pkg)
+          1. Открой файл .pkg двойным кликом.
+          2. Если Mac пишет «не удаётся проверить разработчика»:
+             нажми «Готово», открой Системные настройки -> Конфиденциальность
+             и безопасность, пролистай вниз и нажми «Всё равно открыть».
+          3. Продолжить -> Принять -> Установить -> введи пароль от Mac.
+          4. В DAW пересканируй плагины (в Ableton: Settings -> Plug-Ins -> Rescan).
+
+          WINDOWS (FL-Chorus-1.0.0-win-setup.exe)
+          1. Запусти файл .exe.
+          2. Если появится синее окно «Windows защитила ваш компьютер»:
+             нажми «Подробнее» -> «Выполнить в любом случае».
+          3. Далее -> Установить -> Завершить.
+          4. В DAW пересканируй плагины (VST3).
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FL-Chorus
+          path: out/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
