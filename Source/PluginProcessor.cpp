@@ -24,7 +24,7 @@ FLChorusProcessor::FLChorusProcessor()
     }
     pCross   = apvts.getRawParameterValue (param::crossType);
     pCutoff  = apvts.getRawParameterValue (param::cutoff);
-    pWetOnly = apvts.getRawParameterValue (param::wetOnly);
+    pMix     = apvts.getRawParameterValue (param::mix);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout FLChorusProcessor::createLayout()
@@ -45,40 +45,42 @@ juce::AudioProcessorValueTreeState::ParameterLayout FLChorusProcessor::createLay
             });
     };
 
-    NormalisableRange<float> delayRange (0.0f, 30.0f, 0.01f);
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::delay, 1 }, "Delay", delayRange, 10.0f,
-                                                       attr ([] (float v) { return num (v, 1) + " ms"; }).withLabel ("ms")));
+    // Ranges and defaults as in FL Studio's Fruity Chorus
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::delay, 1 }, "Delay",
+                                                       NormalisableRange<float> (0.05f, 30.0f, 0.0f), 15.025f,
+                                                       attr ([] (float v) { return num (v, 3) + " ms"; }).withLabel ("ms")));
 
-    NormalisableRange<float> depthRange (0.0f, 20.0f, 0.01f);
-    depthRange.setSkewForCentre (5.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::depth, 1 }, "Depth", depthRange, 3.0f,
-                                                       attr ([] (float v) { return num (v, 1) + " ms"; }).withLabel ("ms")));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::depth, 1 }, "Depth",
+                                                       NormalisableRange<float> (0.0f, 5.0f, 0.0f), 2.25f,
+                                                       attr ([] (float v) { return num (v, 2) + " ms"; }).withLabel ("ms")));
 
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::stereo, 1 }, "Stereo",
-                                                       NormalisableRange<float> (0.0f, 360.0f, 1.0f), 90.0f,
-                                                       attr ([] (float v) { return String (roundToInt (v)) + juce::String::fromUTF8 ("\xc2\xb0"); }).withLabel ("deg")));
+                                                       NormalisableRange<float> (0.0f, 360.0f, 0.0f), 59.94f,
+                                                       attr ([] (float v) { return String ((int) std::floor (v + 1.0e-4f)) + juce::String::fromUTF8 ("\xc2\xb0"); }).withLabel ("deg")));
 
-    const float defFreq[numVoices] { 0.42f, 0.71f, 1.13f };
+    const float defFreq[numVoices] { 0.45f, 1.25f, 2.45f };
     for (int v = 0; v < numVoices; ++v)
     {
-        NormalisableRange<float> fr (0.01f, 10.0f, 0.001f);
-        fr.setSkewForCentre (1.0f);
+        NormalisableRange<float> fr (0.0f, 5.0f, 0.0f, 0.5f); // knob position squared, like FL
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::lfoFreq[v], 1 }, "LFO " + String (v + 1) + " Freq", fr, defFreq[v],
-                                                           attr ([] (float f) { return num (f, f < 1.0f ? 2 : 1) + " Hz"; }).withLabel ("Hz")));
+                                                           attr ([] (float f) { return num (f, 2) + " Hz"; }).withLabel ("Hz")));
         layout.add (std::make_unique<AudioParameterChoice> (ParameterID { param::lfoWave[v], 1 }, "LFO " + String (v + 1) + " Wave",
-                                                            StringArray { "Sine", "Triangle", "Multi-sine" }, 0));
+                                                            StringArray { "sin", "sin^3", "multi-sin", "multi-sin^3" }, 0));
     }
 
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { param::crossType, 1 }, "Cross Type",
-                                                        StringArray { "All", "Process LP", "Process HP" }, 0));
+                                                        StringArray { "Process HF", "Process LF" }, 0));
 
-    NormalisableRange<float> cutRange (20.0f, 20000.0f, 1.0f);
-    cutRange.setSkewForCentre (1000.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::cutoff, 1 }, "Cross Cutoff", cutRange, 500.0f,
-                                                       attr ([] (float f) { return f >= 1000.0f ? num (f / 1000.0f, f >= 10000.0f ? 1 : 2) + " kHz"
+    NormalisableRange<float> cutRange (20.0f, 5127.8f, 0.0f);
+    cutRange.setSkewForCentre (320.24371f);
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::cutoff, 1 }, "Cross Cutoff", cutRange, 320.24371f,
+                                                       attr ([] (float f) { return f >= 1000.0f ? num (f / 1000.0f, 2) + " kHz"
                                                                                                 : String (roundToInt (f)) + " Hz"; }).withLabel ("Hz")));
 
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { param::wetOnly, 1 }, "Wet Only", false));
+    // Dry/Wet: 0 % = dry only, 50 % = FL Studio's fixed blend (dry 0.7 + voices 0.42), 100 % = FL "Wet Only"
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { param::mix, 1 }, "Dry/Wet",
+                                                       NormalisableRange<float> (0.0f, 100.0f, 0.0f), 50.0f,
+                                                       attr ([] (float v) { return String (roundToInt (v)) + " %"; }).withLabel ("%")));
     return layout;
 }
 
@@ -90,28 +92,26 @@ bool FLChorusProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
     return layouts.getMainInputChannelSet() == out;
 }
 
-void FLChorusProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+void FLChorusProcessor::prepareToPlay (double sampleRate, int)
 {
     sr = sampleRate;
     for (auto& r : ring)
-        r.prepare ((int) std::ceil (0.055 * sr) + 8);
+        r.prepare ((int) std::ceil (0.036 * sr) + 8);
+    for (auto& b : band)
+        b.reset();
 
-    crossover.prepare ({ sr, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 });
-    crossover.reset();
-    lastCutoff = -1.0f;
-
-    const double ramp = 0.03;
-    for (auto* s : { &delayMs, &depthMs, &stereoTurns, &wetGain, &dryGain })
-        s->reset (sr, ramp);
-
-    const bool wo = pWetOnly->load() > 0.5f;
+    for (auto* s : { &delayMs, &depthMs })
+        s->reset (sr, 0.03);
+    dryGain.reset (sr, 0.02);
+    wetScale.reset (sr, 0.02);
     delayMs.setCurrentAndTargetValue (pDelay->load());
     depthMs.setCurrentAndTargetValue (pDepth->load());
-    stereoTurns.setCurrentAndTargetValue (pStereo->load() / 360.0f);
-    wetGain.setCurrentAndTargetValue (wo ? 1.0f : 0.5f);
-    dryGain.setCurrentAndTargetValue (wo ? 0.0f : 1.0f);
+    dryGain.setCurrentAndTargetValue (dryFor (pMix->load() * 0.01f));
+    wetScale.setCurrentAndTargetValue (wetFor (pMix->load() * 0.01f));
 
-    phase[0] = 0.0; phase[1] = 1.0 / 3.0; phase[2] = 2.0 / 3.0;
+    for (auto& p : phase)
+        p = 0.0;
+    wasPlaying = false;
 }
 
 void FLChorusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -123,27 +123,32 @@ void FLChorusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     for (auto ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, n);
 
-    const bool wo = pWetOnly->load() > 0.5f;
+    // FL starts its LFOs from zero when playback starts
+    bool playing = false;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            playing = pos->getIsPlaying();
+    if (playing && ! wasPlaying)
+        for (auto& p : phase)
+            p = 0.0;
+    wasPlaying = playing;
+
     delayMs.setTargetValue (pDelay->load());
     depthMs.setTargetValue (pDepth->load());
-    stereoTurns.setTargetValue (pStereo->load() / 360.0f);
-    wetGain.setTargetValue (wo ? 1.0f : 0.5f);
-    dryGain.setTargetValue (wo ? 0.0f : 1.0f);
+    dryGain.setTargetValue (dryFor (pMix->load() * 0.01f));
+    wetScale.setTargetValue (wetFor (pMix->load() * 0.01f));
 
-    const int cross = juce::roundToInt (pCross->load()); // 0 all, 1 process LP, 2 process HP
-    const float cut = pCutoff->load();
-    if (std::abs (cut - lastCutoff) > 0.01f)
-    {
-        crossover.setCutoffFrequency (juce::jlimit (20.0f, (float) (0.45 * sr), cut));
-        lastCutoff = cut;
-    }
+    const bool lowBand = juce::roundToInt (pCross->load()) == 1;
+    const double p = OnePole::coef (juce::jlimit (1.0, 0.49 * sr, (double) pCutoff->load()), sr);
+    const double stereoRad = (double) pStereo->load() * (twoPi / 360.0);
 
     Wave wave[numVoices];
     double inc[numVoices];
     for (int v = 0; v < numVoices; ++v)
     {
-        wave[v] = (Wave) juce::roundToInt (pWave[v]->load());
-        inc[v] = (double) pFreq[v]->load() / sr;
+        wave[v] = (Wave) juce::jlimit (0, 3, juce::roundToInt (pWave[v]->load()));
+        const double hz = pFreq[v]->load();
+        inc[v] = twoPi * hz * lfoRateCorrection (hz) / sr;
     }
 
     const double msToSamples = sr / 1000.0;
@@ -154,36 +159,24 @@ void FLChorusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     {
         const double d = delayMs.getNextValue();
         const double dp = depthMs.getNextValue();
-        const double st = stereoTurns.getNextValue();
-        const float wg = wetGain.getNextValue();
         const float dg = dryGain.getNextValue();
+        const float wg = voiceGain * wetScale.getNextValue();
 
         for (int c = 0; c < numCh; ++c)
         {
             const float x = data[c][i];
-            float proc = x, rest = 0.0f;
-            if (cross != 0)
-            {
-                float lo = 0.0f, hi = 0.0f;
-                crossover.processSample (c, x, lo, hi);
-                proc = cross == 1 ? lo : hi;
-                rest = cross == 1 ? hi : lo;
-            }
-
-            ring[c].push (proc);
+            const double banded = lowBand ? band[c].lowPass (x, p) : band[c].highPass (x, p);
+            ring[c].push ((float) banded);
 
             float wet = 0.0f;
+            const double off = c == 1 ? stereoRad : 0.0;
             for (int v = 0; v < numVoices; ++v)
             {
-                double ph = phase[v] + (c == 1 ? st : 0.0);
-                ph -= std::floor (ph);
-                const double lfo = lfoValue (wave[v], ph);
-                const double dl = juce::jmax (2.0, (d + dp * (0.5 + 0.5 * lfo)) * msToSamples);
-                wet += ring[c].read (dl);
+                const double lfo = lfoValue (wave[v], phase[v] + off);
+                wet += ring[c].read ((d + dp * (0.5 + 0.5 * lfo)) * msToSamples);
             }
-            wet *= 1.0f / (float) numVoices;
 
-            const float y = dg * (rest + 0.5f * proc) + wg * wet;
+            const float y = dg * x + wg * wet;
             data[c][i] = y;
             pk[c] = juce::jmax (pk[c], std::abs (y));
         }
@@ -191,7 +184,7 @@ void FLChorusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         for (int v = 0; v < numVoices; ++v)
         {
             phase[v] += inc[v];
-            if (phase[v] >= 1.0) phase[v] -= 1.0;
+            if (phase[v] >= twoPi) phase[v] -= twoPi;
         }
     }
 
@@ -200,7 +193,7 @@ void FLChorusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         if (pk[c] > outputPeak[c].load (std::memory_order_relaxed))
             outputPeak[c].store (pk[c], std::memory_order_relaxed);
     for (int v = 0; v < numVoices; ++v)
-        lfoPhase[v].store ((float) phase[v], std::memory_order_relaxed);
+        lfoPhase[v].store ((float) (phase[v] / twoPi), std::memory_order_relaxed);
 }
 
 void FLChorusProcessor::getStateInformation (juce::MemoryBlock& destData)

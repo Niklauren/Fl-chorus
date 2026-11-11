@@ -12,9 +12,9 @@ inline constexpr const char* depth     = "depth";      // ms
 inline constexpr const char* stereo    = "stereo";     // degrees, 0..360
 inline constexpr const char* lfoFreq[] = { "lfo1_freq", "lfo2_freq", "lfo3_freq" };
 inline constexpr const char* lfoWave[] = { "lfo1_wave", "lfo2_wave", "lfo3_wave" };
-inline constexpr const char* crossType = "cross_type"; // All / Low / High
+inline constexpr const char* crossType = "cross_type"; // Process HF / Process LF
 inline constexpr const char* cutoff    = "cross_cutoff";
-inline constexpr const char* wetOnly   = "wet_only";
+inline constexpr const char* mix       = "mix";        // 0..100 %, 50 % = FL Studio default, 100 % = FL "Wet Only"
 }
 
 class FLChorusProcessor : public juce::AudioProcessor
@@ -63,15 +63,18 @@ private:
     std::atomic<float>* pWave[flchorus::numVoices] {};
     std::atomic<float>* pCross = nullptr;
     std::atomic<float>* pCutoff = nullptr;
-    std::atomic<float>* pWetOnly = nullptr;
+    std::atomic<float>* pMix = nullptr;
 
     double sr = 44100.0;
     flchorus::Ring ring[2];
-    double phase[flchorus::numVoices] { 0.0, 1.0 / 3.0, 2.0 / 3.0 };
+    flchorus::OnePole band[2];
+    double phase[flchorus::numVoices] { 0.0, 0.0, 0.0 }; // radians
+    bool wasPlaying = false;
 
-    juce::SmoothedValue<float> delayMs, depthMs, stereoTurns, wetGain, dryGain;
-    juce::dsp::LinkwitzRileyFilter<float> crossover;
-    float lastCutoff = -1.0f;
+    juce::SmoothedValue<double> delayMs, depthMs;
+    juce::SmoothedValue<float> dryGain, wetScale;
+    static float dryFor (float mix01) { return mix01 <= 0.5f ? 1.0f - 0.6f * mix01 : 1.4f * (1.0f - mix01); }
+    static float wetFor (float mix01) { return mix01 <= 0.5f ? 2.0f * mix01 : 1.0f; }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FLChorusProcessor)
 };

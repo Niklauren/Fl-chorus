@@ -141,7 +141,7 @@ WaveChip::WaveChip (juce::RangedAudioParameter& p)
 {
     attach.sendInitialUpdate();
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    setTooltip ("LFO wave: click to switch Sine / Triangle / Multi-sine");
+    setTooltip ("LFO wave: click to switch sin / sin^3 / multi-sin / multi-sin^3");
 }
 
 void WaveChip::paint (juce::Graphics& g)
@@ -159,17 +159,17 @@ void WaveChip::paint (juce::Graphics& g)
     for (int i = 0; i <= 32; ++i)
     {
         const double ph = i / 32.0;
-        const float v = (float) flchorus::lfoValue ((flchorus::Wave) index, ph);
+        const float v = (float) flchorus::lfoValue ((flchorus::Wave) index, flchorus::twoPi * ph);
         const float px = icon.getX() + icon.getWidth() * (float) ph, py = icon.getCentreY() - v * icon.getHeight() * 0.5f;
         if (i == 0) p.startNewSubPath (px, py); else p.lineTo (px, py);
     }
     g.setColour (col::lime);
     g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    static const char* names[] = { "SINE", "TRIANGLE", "MULTI" };
+    static const char* names[] = { "SIN", "SIN\xc2\xb3", "MULTI", "MULTI\xc2\xb3" };
     g.setColour (col::text);
     g.setFont (Fonts::get().title (9.0f).withExtraKerningFactor (0.04f));
-    g.drawText (names[juce::jlimit (0, 2, index)], juce::Rectangle<float> (icon.getRight() + 5.0f, r.getY(), r.getRight() - icon.getRight() - 9.0f, r.getHeight()),
+    g.drawText (juce::String::fromUTF8 (names[juce::jlimit (0, 3, index)]), juce::Rectangle<float> (icon.getRight() + 5.0f, r.getY(), r.getRight() - icon.getRight() - 9.0f, r.getHeight()),
                 juce::Justification::centredLeft, false);
 }
 
@@ -177,7 +177,7 @@ void WaveChip::mouseUp (const juce::MouseEvent& e)
 {
     if (! getLocalBounds().contains (e.getPosition()))
         return;
-    attach.setValueAsCompleteGesture ((float) ((index + 1) % 3));
+    attach.setValueAsCompleteGesture ((float) ((index + 1) % 4));
 }
 
 //==============================================================================
@@ -186,14 +186,14 @@ CrossSwitch::CrossSwitch (juce::RangedAudioParameter& p)
 {
     attach.sendInitialUpdate();
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    setTooltip ("ALL: chorus on the whole signal. LOW / HIGH: only below / above the cutoff");
+    setTooltip ("HIGH = Process HF: chorus only above the cutoff. LOW = Process LF: only below it");
 }
 
 void CrossSwitch::paint (juce::Graphics& g)
 {
-    static const char* names[] = { "ALL", "LOW", "HIGH" };
-    const float h = ((float) getHeight() - 10.0f) / 3.0f;
-    for (int i = 0; i < 3; ++i)
+    static const char* names[] = { "HIGH", "LOW" };
+    const float h = ((float) getHeight() - 5.0f) / 2.0f;
+    for (int i = 0; i < 2; ++i)
     {
         const juce::Rectangle<float> r (0.5f, 0.5f + (float) i * (h + 5.0f), (float) getWidth() - 1.0f, h - 1.0f);
         const bool sel = i == index;
@@ -211,8 +211,8 @@ void CrossSwitch::mouseUp (const juce::MouseEvent& e)
 {
     if (! getLocalBounds().contains (e.getPosition()))
         return;
-    const float h = ((float) getHeight() - 10.0f) / 3.0f;
-    const int i = juce::jlimit (0, 2, (int) ((float) e.y / (h + 5.0f)));
+    const float h = ((float) getHeight() - 5.0f) / 2.0f;
+    const int i = juce::jlimit (0, 1, (int) ((float) e.y / (h + 5.0f)));
     attach.setValueAsCompleteGesture ((float) i);
 }
 
@@ -225,24 +225,22 @@ Content::Content (FLChorusProcessor& p)
     setupKnob (delay,  param::delay,  "Delay",  { 162, 72, 92, 115 });
     setupKnob (depth,  param::depth,  "Depth",  { 258, 72, 92, 115 });
     setupKnob (stereo, param::stereo, "Stereo", { 354, 72, 92, 115 });
+    setupKnob (mix,    param::mix,    "Dry/Wet", { 450, 72, 92, 115 });
 
     // row B: LFO 1..3 (+ wave chips), Cutoff, Cross
     for (int v = 0; v < numVoices; ++v)
     {
-        setupKnob (lfo[v], param::lfoFreq[v], "LFO " + juce::String (v + 1), { 18 + v * 96, 206, 92, 115 });
+        setupKnob (lfo[v], param::lfoFreq[v], "LFO " + juce::String (v + 1), { 162 + v * 96, 206, 92, 115 });
         waves[v] = std::make_unique<WaveChip> (*proc.apvts.getParameter (param::lfoWave[v]));
         addAndMakeVisible (*waves[v]);
     }
-    setupKnob (cutoff, param::cutoff, "Cutoff", { 18 + 3 * 96, 206, 92, 115 });
+    setupKnob (cutoff, param::cutoff, "Cutoff", { 450, 206, 92, 115 });
 
-    crossBlock = { 18 + 4 * 96, 206, 92, 137 };
+    crossBlock = { 14, 206, 132, 115 }; // left column, under the LFO display
     cross = std::make_unique<CrossSwitch> (*proc.apvts.getParameter (param::crossType));
     addAndMakeVisible (*cross);
 
-    wetOnly.setTooltip ("Only the chorus voices, no dry signal (for use on a send)");
-    wetOnly.setClickingTogglesState (true);
-    addAndMakeVisible (wetOnly);
-    wetAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, param::wetOnly, wetOnly);
+    mix.slider.setTooltip ("0 % = dry only, 50 % = FL Studio default, 100 % = wet only (FL \"Wet Only\")");
 
     link.setFont (Fonts::get().semi (10.0f), false, juce::Justification::centredLeft);
     link.setColour (juce::HyperlinkButton::textColourId, col::sub);
@@ -252,7 +250,7 @@ Content::Content (FLChorusProcessor& p)
 
 Content::~Content()
 {
-    for (auto* k : { &delay, &depth, &stereo, &lfo[0], &lfo[1], &lfo[2], &cutoff })
+    for (auto* k : { &delay, &depth, &stereo, &mix, &lfo[0], &lfo[1], &lfo[2], &cutoff })
     {
         k->slider.setLookAndFeel (nullptr);
         k->readout.setLookAndFeel (nullptr);
@@ -305,7 +303,7 @@ void Content::setupKnob (Knob& k, const char* paramId, const juce::String& name,
 
 void Content::resized()
 {
-    for (auto* k : { &delay, &depth, &stereo, &lfo[0], &lfo[1], &lfo[2], &cutoff })
+    for (auto* k : { &delay, &depth, &stereo, &mix, &lfo[0], &lfo[1], &lfo[2], &cutoff })
     {
         const auto b = k->block;
         k->slider.setBounds (b.getX() + 4, b.getY() + 18, 84, 84);
@@ -314,10 +312,8 @@ void Content::resized()
     for (int v = 0; v < flchorus::numVoices; ++v)
         waves[v]->setBounds (lfo[v].block.getX() + 4, lfo[v].block.getY() + 119, 84, 18);
 
-    cross->setBounds (crossBlock.getX() + 4, crossBlock.getY() + 20, 84, 96);
+    cross->setBounds (crossBlock.getX() + 6, crossBlock.getY() + 24, crossBlock.getWidth() - 12, 74);
 
-    const int pillW = 26 + (int) std::ceil (textWidth (Fonts::get().title (11.0f).withExtraKerningFactor (0.04f), wetOnly.getButtonText())) + 10;
-    wetOnly.setBounds (486 - pillW, 21, pillW, 26);
 
     const auto titleW = textWidth (Fonts::get().title (22.0f).withExtraKerningFactor (-0.015f), "FL Chorus");
     const auto linkW = textWidth (Fonts::get().semi (10.0f), link.getButtonText());
@@ -346,6 +342,7 @@ static void blobs (juce::Graphics& g)
     softBlob (g, { 240.0f, 150.0f, 260.0f, 190.0f }, juce::Colour (0xffd6ee45), 0.24f, 0.09f, 0.55f, 20.0f);
     softBlob (g, { 170.0f, -20.0f, 240.0f, 150.0f }, juce::Colour (0xff3e7d2e), 0.40f, 0.15f, 0.60f, 24.0f);
     softBlob (g, { 0.0f, 230.0f, 280.0f, 160.0f }, juce::Colour (0xff3e7d2e), 0.32f, 0.12f, 0.60f, 24.0f);
+    softBlob (g, { 400.0f, 40.0f, 230.0f, 170.0f }, juce::Colour (0xff63b83e), 0.30f, 0.12f, 0.55f, 22.0f);
 }
 
 void Content::drawBackground (juce::Graphics& g)
@@ -354,7 +351,7 @@ void Content::drawBackground (juce::Graphics& g)
     blobs (g);
 
     // header glass
-    const juce::Rectangle<float> header (14.0f, 14.0f, 484.0f, 40.0f);
+    const juce::Rectangle<float> header (14.0f, 14.0f, 580.0f, 40.0f);
     juce::Path hp;
     hp.addRoundedRectangle (header, 14.0f);
     juce::DropShadow (juce::Colours::black.withAlpha (0.35f), 18, { 0, 6 }).drawForPath (g, hp);
@@ -376,7 +373,7 @@ void Content::drawBackground (juce::Graphics& g)
 
     glassBox (g, displayBox.toFloat(), 12.0f, 0.05f, 0.12f);
 
-    for (auto* k : { &delay, &depth, &stereo, &lfo[0], &lfo[1], &lfo[2], &cutoff })
+    for (auto* k : { &delay, &depth, &stereo, &mix, &lfo[0], &lfo[1], &lfo[2], &cutoff })
     {
         const auto b = k->block.toFloat();
         g.setColour (col::text);
@@ -433,9 +430,8 @@ void Content::drawLfoDisplay (juce::Graphics& g)
         for (int i = 0; i <= steps; ++i)
         {
             const double t = -window + window * i / steps;
-            double ph = shownPhase[v] + f * t;
-            ph -= std::floor (ph);
-            const float val = (float) (0.5 + 0.5 * lfoValue (w, ph));
+            const double ph = shownPhase[v] + f * t;
+            const float val = (float) (0.5 + 0.5 * lfoValue (w, twoPi * ph));
             endX = area.getX() + area.getWidth() * (float) i / (float) steps;
             endY = dp > 0.001f ? area.getBottom() - val * area.getHeight() : area.getBottom();
             if (i == 0) p.startNewSubPath (endX, endY); else p.lineTo (endX, endY);

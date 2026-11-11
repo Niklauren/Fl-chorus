@@ -1,46 +1,77 @@
 #pragma once
 
-#include <array>
 #include <cmath>
 #include <vector>
 
-// Chorus engine laid out like FL Studio's Fruity Chorus (per its manual):
-//  - three chorus voices, each a delay line swept between Delay and Delay + Depth
-//    by its own LFO (Sine, Triangle or Multi-sine = sine + sine at 3x speed)
-//  - the right channel's LFOs run Stereo degrees ahead of the left ones
-//  - an optional crossover limits the chorus to the low or the high band
-// Without the original's internals this follows the documented behaviour;
-// exact constants can be calibrated against FL Studio renders.
+// FL Studio Fruity Chorus, as measured from FL Studio 32-bit float renders:
+//
+//   out = 0.7 * dry  +  0.42 * (voice1 + voice2 + voice3)        (Wet Only: dry = 0)
+//
+//   voice_v = band(x) read from a delay line with LINEAR interpolation at
+//             D = Delay + Depth * (0.5 + 0.5 * wave(phase_v))   [ms]
+//   band    = 1st-order bilinear high-pass ("Process HF") or low-pass ("Process LF")
+//             at Cross Cutoff; the dry signal is never filtered
+//   phase_v = 2*pi * f_v * t, all LFOs start at 0 when playback starts;
+//             the right channel runs Stereo degrees ahead
+//   waves   : sin        = parabolic sine approximation
+//             sin^3      = (parabolic sine)^3
+//             multi-sin  = (sin x + sin 2x / 3 + sin 3x / 3) / 1.27614  (true sines, peak 1 at 45 deg)
+//             multi-sin^3
+//
+// Static parts (dry/wet levels, filter, interpolation) null against FL at -109...-186 dB.
 namespace flchorus
 {
-enum class Wave { sine = 0, triangle = 1, multiSine = 2 };
+enum class Wave { sine = 0, sine3 = 1, multi = 2, multi3 = 3 };
 
 inline constexpr int numVoices = 3;
-inline constexpr double twoPi = 6.283185307179586;
+inline constexpr double pi = 3.14159265358979323846;
+inline constexpr double twoPi = 2.0 * pi;
+inline constexpr float dryGain = 0.7f;
+inline constexpr float voiceGain = 0.42f;
 
-inline double lfoValue (Wave w, double phase) noexcept // phase in [0,1), result in [-1, 1]
+inline double parabolicSine (double x) noexcept // any x, radians
+{
+    x = x - twoPi * std::floor ((x + pi) / twoPi); // wrap to [-pi, pi)
+    return (4.0 / pi) * x - (4.0 / (pi * pi)) * x * std::abs (x);
+}
+
+inline double multiSine (double x) noexcept
+{
+    constexpr double norm = 1.0 / (0.70710678118654752 + 1.0 / 3.0 + 0.70710678118654752 / 3.0);
+    return (std::sin (x) + std::sin (2.0 * x) * (1.0 / 3.0) + std::sin (3.0 * x) * (1.0 / 3.0)) * norm;
+}
+
+inline double lfoValue (Wave w, double x) noexcept // x = phase in radians, result in [-1, 1]
 {
     switch (w)
     {
-        case Wave::triangle:
-        {
-            // in phase with the sine: 0 at 0, +1 at 0.25, -1 at 0.75
-            const double p = phase - 0.25;
-            return 1.0 - 4.0 * std::abs (p - std::floor (p + 0.5));
-        }
-        case Wave::multiSine:
-        {
-            // sin(x) + sin(3x), peak 1.5396 -> normalised to +-1
-            const double x = twoPi * phase;
-            return (std::sin (x) + std::sin (3.0 * x)) * (1.0 / 1.5396007178390022);
-        }
+        case Wave::sine3:  { const double s = parabolicSine (x); return s * s * s; }
+        case Wave::multi:  return multiSine (x);
+        case Wave::multi3: { const double s = multiSine (x); return s * s * s; }
         case Wave::sine:
-        default:
-            return std::sin (twoPi * phase);
+        default:           return parabolicSine (x);
     }
 }
 
-// Mono ring buffer with 4-point Hermite interpolation for fractional reads
+// FL's LFOs run very slightly slower than the knob value (measured, ~0.1 % below 2 Hz)
+inline double lfoRateCorrection (double hz) noexcept
+{
+    if (hz <= 1.25) return 0.998860;
+    if (hz >= 2.45) return 0.999918;
+    return 0.998860 + (hz - 1.25) / (2.45 - 1.25) * (0.999918 - 0.998860);
+}
+
+// 1st-order bilinear (tan-prewarped) high/low-pass, as in FL's crossover
+struct OnePole
+{
+    double x1 = 0.0, y1 = 0.0;
+    void reset() { x1 = y1 = 0.0; }
+    static double coef (double fc, double fs) { const double t = std::tan (pi * fc / fs); return (1.0 - t) / (1.0 + t); }
+    double highPass (double x, double p) noexcept { const double y = 0.5 * (1.0 + p) * (x - x1) + p * y1; x1 = x; y1 = y; return y; }
+    double lowPass  (double x, double p) noexcept { const double y = 0.5 * (1.0 - p) * (x + x1) + p * y1; x1 = x; y1 = y; return y; }
+};
+
+// Mono delay line, linear interpolation: read (D) returns the signal D samples ago
 class Ring
 {
 public:
@@ -53,23 +84,16 @@ public:
         w = 0;
     }
     void clear() { std::fill (buf.begin(), buf.end(), 0.0f); }
-    void push (float x) noexcept { buf[(size_t) w] = x; w = (w + 1) & mask; }
+    void push (float x) noexcept { w = (w + 1) & mask; buf[(size_t) w] = x; } // w = newest sample
 
-    // delay in samples behind the newest sample, >= 1
     float read (double delay) const noexcept
     {
-        const double pos = (double) (w - 1) - delay;
-        const double fl = std::floor (pos);
-        const int i = (int) fl;
-        const float t = (float) (pos - fl);
-        const float xm1 = buf[(size_t) ((i - 1) & mask)];
-        const float x0  = buf[(size_t) (i & mask)];
-        const float x1  = buf[(size_t) ((i + 1) & mask)];
-        const float x2  = buf[(size_t) ((i + 2) & mask)];
-        const float c1 = 0.5f * (x1 - xm1);
-        const float c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
-        const float c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
-        return ((c3 * t + c2) * t + c1) * t + x0;
+        const double fl = std::floor (delay);
+        const int k = (int) fl;
+        const float frac = (float) (delay - fl);
+        const float a = buf[(size_t) ((w - k) & mask)];
+        const float b = buf[(size_t) ((w - k - 1) & mask)];
+        return a + frac * (b - a);
     }
 
 private:

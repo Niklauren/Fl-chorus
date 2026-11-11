@@ -5,7 +5,7 @@
 // Same visual system as FL Soft Clipper: fixed design space, scaled to the window.
 namespace flc::ui
 {
-inline constexpr int designW = 512, designH = 357;
+inline constexpr int designW = 608, designH = 357;
 
 struct Fonts
 {
@@ -86,12 +86,10 @@ private:
 
     FLChorusProcessor& proc;
     KnobLookAndFeel lnf;
-    Knob delay, depth, stereo, lfo[flchorus::numVoices], cutoff;
+    Knob delay, depth, stereo, mix, lfo[flchorus::numVoices], cutoff;
     std::unique_ptr<WaveChip> waves[flchorus::numVoices];
     std::unique_ptr<CrossSwitch> cross;
     juce::Rectangle<int> crossBlock;
-    PillButton wetOnly { "WET ONLY" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> wetAttach;
     juce::HyperlinkButton link;
 
     juce::Image bgCache;
@@ -101,7 +99,7 @@ private:
     double shownPhase[flchorus::numVoices] { 0.0, 0.0, 0.0 };
 
     const juce::Rectangle<int> displayBox { 14, 64, 132, 132 };
-    const juce::Rectangle<int> meterBox { 462, 64, 36, 132 };
+    const juce::Rectangle<int> meterBox { 558, 64, 36, 132 };
 };
 } // namespace flc::ui
 
